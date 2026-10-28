@@ -402,6 +402,7 @@ func (m *OS) Init() tea.Cmd {
 		listenCwdChangeUntil(m.stopSignal(), m.ensureCwdChangeChan()),
 		listenForFileChange(m.stopSignal(), m.fileWatchChan(), time.Time{}),
 		listenNvimNavigationUntil(m.stopSignal(), m.ensureNvimNavigationChan()),
+		listenDnDUntil(m.stopSignal(), m.ensureDnDInbox()),
 	}
 
 	// Ask an SSH client's terminal whether it draws sixel. See sixel_probe.go.
@@ -412,6 +413,12 @@ func (m *OS) Init() tea.Cmd {
 	// Ask the terminal whether it takes OSC 7501 reports. See
 	// host_program_status.go.
 	if cmd := m.hostProgramStatusProbe(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+
+	// Ask the terminal whether it speaks the drag and drop protocol. See
+	// dnd_host.go.
+	if cmd := m.dndHostProbe(); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
 
@@ -1126,6 +1133,10 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	if c, ok := m.handleHostProgramStatusMsg(msg); ok {
 		return m, c
 	}
+	// The terminal's drag and drop messages. See dnd_host.go.
+	if c, ok := m.handleHostDnD(msg); ok {
+		return m, c
+	}
 
 	switch msg := msg.(type) {
 	case sidebarSessionNotice:
@@ -1657,6 +1668,11 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case NvimNavigationMsg:
 		m.onNvimNavigation(msg)
 		return m, listenNvimNavigationUntil(m.stopSignal(), m.PendingNvimNavigation)
+	case dndWakeMsg:
+		// A pane's program sent drag and drop messages. See dnd.go.
+		m.handleDnDWake()
+		m.renderSkipped = false
+		return m, tea.Batch(listenDnDUntil(m.stopSignal(), m.ensureDnDInbox()), m.dndHostFlush())
 
 	case fileListMsg:
 		// A directory read that finished on its own goroutine. The handler drops

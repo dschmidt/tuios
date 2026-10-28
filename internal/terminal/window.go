@@ -352,6 +352,7 @@ type Window struct {
 	NvimNavFunc       func(direction string)   // Callback for nvim navigation requests (OSC 7777)
 	NvimNavStateFunc  func(active bool)        // Callback for nvim navigation state (OSC 7777)
 	NvimNavResetFunc  func()                   // Callback when the alternate screen exits
+	DnDFunc           func(vt.DnDCommand)      // Callback for a drag and drop message (OSC 72)
 	outputQ           *outputQueue             // Queue for serializing daemon PTY output writes
 	outputDone        chan struct{}            // Signal to stop the output writer and render coalescer goroutines
 	suppressCallbacks atomic.Bool              // Suppress VT emulator callbacks during state restoration (prevents race conditions)
@@ -762,6 +763,16 @@ func newWindowBase(id, title string, x, y, width, height, z int, ptyDataChan cha
 			}
 		},
 		PrivateOSC: func(cmd int, data []byte) {
+			if cmd == vt.DnDCode {
+				// The drag and drop protocol. Parsed here, where the body is
+				// still valid; the chunks are joined by the app.
+				if window.DnDFunc != nil {
+					if dnd, ok := vt.ParseDnD(data); ok {
+						window.DnDFunc(dnd)
+					}
+				}
+				return
+			}
 			if cmd != nvimNavigatorOSC {
 				return
 			}

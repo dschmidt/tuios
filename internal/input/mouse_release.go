@@ -166,6 +166,11 @@ func handleMouseRelease(msg tea.MouseReleaseMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	if terminalMouseBindingConsumesRelease(msg, o) {
 		return o, nil
 	}
+	// The release of a drag between panes is the drop. The source program
+	// does not see it, as it would not under kitty. See dnd_drag.go.
+	if mouse := msg.Mouse(); o.DnDRelease(mouse.X, mouse.Y) {
+		return o, nil
+	}
 	// Forward mouse release to terminal if in terminal mode and window has mouse tracking
 	if o.Mode == app.TerminalMode {
 		focusedWindow := o.GetFocusedWindow()
