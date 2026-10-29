@@ -53,8 +53,9 @@ KITTY_BIN=/path/to/kitty/bin TUIOS_BIN=/path/to/tuios YAZI_BIN=/path/to/yazi \
 ```
 
 Needs, besides the list above without the X11 parts: `sway`, `gcc`,
-`wayland-scanner` and the libwayland-client headers (`libwayland-bin`,
-`libwayland-dev`), and `curl` to fetch the protocol file once.
+`pkg-config`, `wayland-scanner` and the libwayland-client headers
+(`libwayland-bin` and `libwayland-dev` on Debian, `wayland-devel` on
+openSUSE), and `curl` to fetch the protocol file once.
 
 ## What a change to the bridge has to keep
 

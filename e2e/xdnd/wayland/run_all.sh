@@ -1,9 +1,10 @@
 #!/bin/bash
 # Runs every scenario on native Wayland, under a headless sway it starts, and
 # prints a summary. Exits non-zero if a check failed.
-# Needs, besides what ../README.md lists: sway, gcc, wayland-scanner and the
-# libwayland-client headers (libwayland-dev, libwayland-bin), and curl to
-# fetch the virtual pointer protocol once.
+# Needs, besides what ../README.md lists: sway, gcc, pkg-config,
+# wayland-scanner and the libwayland-client headers (libwayland-dev and
+# libwayland-bin on Debian, wayland-devel on openSUSE), and curl to fetch the
+# virtual pointer protocol once.
 HERE=$(cd "$(dirname "$0")" && pwd)
 export XDND_OUT=${XDND_OUT:-$(mktemp -d /tmp/tuios-xdnd-wl-XXXX)}
 mkdir -p "$XDND_OUT"
@@ -15,7 +16,9 @@ if [ ! -x "$VP" ]; then
   curl -sSL -o "$B/vp.xml" https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/raw/master/unstable/wlr-virtual-pointer-unstable-v1.xml
   wayland-scanner client-header "$B/vp.xml" "$B/vp.h"
   wayland-scanner private-code "$B/vp.xml" "$B/vp.c"
-  gcc -O2 -I"$B" -o "$VP" "$HERE/vpointer.c" "$B/vp.c" -lwayland-client || exit 1
+  # pkg-config, since the header is under /usr/include/wayland on some
+  # distributions and under /usr/include on others.
+  gcc -O2 -I"$B" $(pkg-config --cflags wayland-client) -o "$VP" "$HERE/vpointer.c" "$B/vp.c" $(pkg-config --libs wayland-client) || exit 1
 fi
 export XDND_VPOINTER=$VP
 
