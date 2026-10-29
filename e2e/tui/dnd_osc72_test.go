@@ -39,6 +39,22 @@ import (
 // a new press not ending a stale gesture, the ignored-gesture subtest never
 // sees its second drag. See NEGATIVE_CONTROLS.md.
 
+// dndClient starts a client with the arguments given: a fixed cell size, so a
+// pixel report is arithmetic (see dndMouse), the suite's own TUIOS_DND_LOG
+// passed on so a failing exchange can be read back, and the host's output
+// kept for hostInPixelMode.
+func dndClient(t *testing.T, base string, args ...string) *tuitest.Terminal {
+	t.Helper()
+	env := []string{"TUIOS_CELL_SIZE=8x16"}
+	if v := os.Getenv("TUIOS_DND_LOG"); v != "" {
+		env = append(env, "TUIOS_DND_LOG="+v)
+	}
+	out := &lockedBuffer{}
+	term := startIn(t, base, startOpts{cols: 140, rows: 40, args: args, env: env, out: out})
+	dndHostOut.Store(term, out)
+	return term
+}
+
 // dndBoard is a daemon session with two tiled panes side by side, in terminal
 // mode, and their rectangles.
 func dndBoard(t *testing.T) (term *tuitest.Terminal, base, session string, left, right winRect) {
@@ -46,16 +62,7 @@ func dndBoard(t *testing.T) (term *tuitest.Terminal, base, session string, left,
 	session = "e2e-dnd"
 	base = t.TempDir()
 	writeConfig(t, base, "[startup]\ndaemon = true\ntiled = true\nlayout = 'bsp'\n")
-	// The protocol log follows the suite's own TUIOS_DND_LOG, so a failing
-	// exchange can be read back from that file.
-	// A fixed cell size makes a pixel report arithmetic; see dndMouse.
-	env := []string{"TUIOS_CELL_SIZE=8x16"}
-	if v := os.Getenv("TUIOS_DND_LOG"); v != "" {
-		env = append(env, "TUIOS_DND_LOG="+v)
-	}
-	out := &lockedBuffer{}
-	term = startIn(t, base, startOpts{cols: 140, rows: 40, args: []string{"new", session}, env: env, out: out})
-	dndHostOut.Store(term, out)
+	term = dndClient(t, base, "new", session)
 	killDaemon(t, base)
 	waitBoot(t, term)
 	newWindow(t, term)
@@ -112,6 +119,17 @@ func dndMouse(t *testing.T, term *tuitest.Terminal, what string, action tuitest.
 	sendMouse(t, term, what, ev)
 }
 
+// peerSource and peerTarget are the shell commands that run a dndpeer in a
+// raw pane, logging to log. The source offers files; env goes in front of
+// the peer, after the stty that the raw pane needs.
+func peerSource(bin, log, env string, files ...string) string {
+	return "stty raw -echo; " + env + bin + " source " + log + " " + strings.Join(files, " ")
+}
+
+func peerTarget(bin, log string) string {
+	return "stty raw -echo; " + bin + " target " + log
+}
+
 // dragAcross presses in from, carries the pointer a cell at a time to to, and
 // returns without releasing. The frame mid-drag is saved as an artifact.
 func dragAcross(t *testing.T, term *tuitest.Terminal, fromX, fromY, toX, toY int, art string) {
@@ -144,9 +162,8 @@ func TestDnDBetweenPanes(t *testing.T) {
 			}
 		}
 		srcLog, dstLog := filepath.Join(dir, "source.log"), filepath.Join(dir, "target.log")
-		runInPane(t, base, session, right, "stty raw -echo; "+bin+" target "+dstLog, "DNDPEER-READY")
-		runInPane(t, base, session, left, fmt.Sprintf("stty raw -echo; %s source %s %s %s", bin, srcLog,
-			filepath.Join(dir, "a.txt"), filepath.Join(dir, "b.txt")), "DNDPEER-READY")
+		runInPane(t, base, session, right, peerTarget(bin, dstLog), "DNDPEER-READY")
+		runInPane(t, base, session, left, peerSource(bin, srcLog, "", filepath.Join(dir, "a.txt"), filepath.Join(dir, "b.txt")), "DNDPEER-READY")
 
 		fromX, fromY := left.X+4, left.Y+5
 		toX, toY := right.X+right.Width/2, right.Y+right.Height/2
@@ -154,7 +171,7 @@ func TestDnDBetweenPanes(t *testing.T) {
 
 		// The label names the files and the pane they come from, so the person
 		// can check both before letting go.
-		if s := term.Screen().Text(); !strings.Contains(s, "a.txt, b.txt") || !strings.Contains(s, "from:") {
+		if s := term.Screen().Text(); !strings.Contains(s, "a.txt, b.txt from ") {
 			t.Errorf("the drag label is not on screen mid-drag\n%s", term.Snapshot())
 		}
 
@@ -200,8 +217,7 @@ func TestDnDBetweenPanes(t *testing.T) {
 		// paths must arrive bracketed, so the program knows they were not typed.
 		runInPane(t, base, session, right,
 			"stty raw -echo; printf '\\033[?2004h'; printf 'SINK%sREADY\\n' ''; cat > "+out, "SINKREADY")
-		runInPane(t, base, session, left, fmt.Sprintf("stty raw -echo; %s source %s %s", bin, srcLog,
-			filepath.Join(dir, "one.txt")), "DNDPEER-READY")
+		runInPane(t, base, session, left, peerSource(bin, srcLog, "", filepath.Join(dir, "one.txt")), "DNDPEER-READY")
 
 		toX, toY := right.X+right.Width/2, right.Y+right.Height/2
 		dragAcross(t, term, left.X+4, left.Y+5, toX, toY, art)
@@ -225,9 +241,8 @@ func TestDnDBetweenPanes(t *testing.T) {
 			t.Fatal(err)
 		}
 		srcLog, dstLog := filepath.Join(dir, "source.log"), filepath.Join(dir, "target.log")
-		runInPane(t, base, session, right, "stty raw -echo; "+bin+" target "+dstLog, "DNDPEER-READY")
-		runInPane(t, base, session, left, fmt.Sprintf("stty raw -echo; DNDPEER_IGNORE_GESTURES=1 %s source %s %s", bin, srcLog,
-			filepath.Join(dir, "one.txt")), "DNDPEER-READY")
+		runInPane(t, base, session, right, peerTarget(bin, dstLog), "DNDPEER-READY")
+		runInPane(t, base, session, left, peerSource(bin, srcLog, "DNDPEER_IGNORE_GESTURES=1 ", filepath.Join(dir, "one.txt")), "DNDPEER-READY")
 		toX, toY := right.X+right.Width/2, right.Y+right.Height/2
 		// The first gesture lands on nothing the program drags: it stays
 		// silent, and the button comes up.
@@ -247,8 +262,7 @@ func TestDnDBetweenPanes(t *testing.T) {
 			t.Fatal(err)
 		}
 		srcLog := filepath.Join(dir, "source.log")
-		runInPane(t, base, session, left, fmt.Sprintf("stty raw -echo; %s source %s %s", bin, srcLog,
-			filepath.Join(dir, "one.txt")), "DNDPEER-READY")
+		runInPane(t, base, session, left, peerSource(bin, srcLog, "", filepath.Join(dir, "one.txt")), "DNDPEER-READY")
 		toX, toY := left.X+left.Width-6, left.Y+left.Height-6
 		dragAcross(t, term, left.X+4, left.Y+5, toX, toY, artifactDir(t))
 		dropAt(t, term, toX, toY)
@@ -294,7 +308,7 @@ func TestDnDRealPrograms(t *testing.T) {
 
 		toX, toY := right.X+right.Width/2, right.Y+right.Height/2
 		dragAcross(t, term, col+2, row, toX, toY, art)
-		if s := term.Screen().Text(); !strings.Contains(s, "drag-me.txt") || !strings.Contains(s, "from:") {
+		if s := term.Screen().Text(); !strings.Contains(s, "drag-me.txt from ") {
 			t.Errorf("the drag label is not on screen mid-drag\n%s", term.Snapshot())
 		}
 		dropAt(t, term, toX, toY)
@@ -383,20 +397,14 @@ func TestDnDRegistrationOutlivesTheClient(t *testing.T) {
 			t.Fatal(err)
 		}
 		srcLog, dstLog = filepath.Join(dir, "source.log"), filepath.Join(dir, "target.log")
-		runInPane(t, base, session, right, "stty raw -echo; "+bin+" target "+dstLog, "DNDPEER-READY")
-		runInPane(t, base, session, left, fmt.Sprintf("stty raw -echo; %s source %s %s", bin, srcLog, filepath.Join(dir, "a.txt")), "DNDPEER-READY")
+		runInPane(t, base, session, right, peerTarget(bin, dstLog), "DNDPEER-READY")
+		runInPane(t, base, session, left, peerSource(bin, srcLog, "", filepath.Join(dir, "a.txt")), "DNDPEER-READY")
 		return dir, srcLog, dstLog
 	}
 	// another attaches one more client of the board's size, in terminal mode.
 	another := func(t *testing.T, base, session string, args ...string) *tuitest.Terminal {
 		t.Helper()
-		env := []string{"TUIOS_CELL_SIZE=8x16"}
-		if v := os.Getenv("TUIOS_DND_LOG"); v != "" {
-			env = append(env, "TUIOS_DND_LOG="+v)
-		}
-		out := &lockedBuffer{}
-		term := startIn(t, base, startOpts{cols: 140, rows: 40, args: append([]string{"attach", session}, args...), env: env, out: out})
-		dndHostOut.Store(term, out)
+		term := dndClient(t, base, append([]string{"attach", session}, args...)...)
 		if err := term.WaitFor(func(s tuitest.Screen) bool { return countWindows(s) == 2 }, bootTimeout); err != nil {
 			t.Fatalf("the client never showed the two panes: %v\n%s", err, term.Snapshot())
 		}
@@ -404,7 +412,6 @@ func TestDnDRegistrationOutlivesTheClient(t *testing.T) {
 		enterTerminalMode(t, term)
 		return term
 	}
-	count := func(s, sub string) int { return strings.Count(s, sub) }
 
 	t.Run("a client attached after the programs started", func(t *testing.T) {
 		_, base, session, left, right := dndBoard(t)
@@ -433,26 +440,31 @@ func TestDnDRegistrationOutlivesTheClient(t *testing.T) {
 		// stay out of it.
 		dragAcross(t, first, left.X+4, left.Y+5, right.X+right.Width/2, right.Y+right.Height/2, artifactDir(t))
 		dropAt(t, first, right.X+right.Width/2, right.Y+right.Height/2)
-		dst := waitFile(t, dstLog, func(s string) bool { return strings.Contains(s, "data x=1") }, "the target never got the drop data")
-		src := waitFile(t, srcLog, func(s string) bool { return strings.Contains(s, "finished") }, "the source never heard the drag finish")
+		waitFile(t, dstLog, func(s string) bool { return strings.Contains(s, "data x=1") }, "the target never got the drop data")
+		waitFile(t, srcLog, func(s string) bool { return strings.Contains(s, "finished") }, "the source never heard the drag finish")
+		// A second answer to the query, or an error from the client that
+		// did not make the drag, would have been written before the drop
+		// finished: both clients read the same stream, and the second one
+		// got every message long before the first one's drag ended. The
+		// pause is for what is still in flight through the daemon.
+		alive(t, second, "the second client after the drag")
 		time.Sleep(time.Second)
 		b, _ := os.ReadFile(dstLog)
-		dst = string(b)
+		dst := string(b)
 		b, _ = os.ReadFile(srcLog)
-		src = string(b)
-		_ = second
+		src := string(b)
 		for name, log := range map[string]string{"source": src, "target": dst} {
-			if n := count(log, "recv t=q"); n != 1 {
+			if n := strings.Count(log, "recv t=q"); n != 1 {
 				t.Errorf("the %s got %d answers to its query, want 1:\n%s", name, n, log)
 			}
 		}
-		if n := count(dst, "data x=1"); n != 1 {
+		if n := strings.Count(dst, "data x=1"); n != 1 {
 			t.Errorf("the target got the data %d times, want once:\n%s", n, dst)
 		}
 		if strings.Contains(dst, "error") || strings.Contains(src, "EPERM") || strings.Contains(src, "EINVAL") {
 			t.Errorf("a client that did not make the drag answered for it:\nsource:\n%s\ntarget:\n%s", src, dst)
 		}
-		if count(src, `payload="OK"`) != 1 || !strings.Contains(src, "finished canceled=0") {
+		if strings.Count(src, `payload="OK"`) != 1 || !strings.Contains(src, "finished canceled=0") {
 			t.Errorf("the source did not see one start and a finished drop:\n%s", src)
 		}
 	})

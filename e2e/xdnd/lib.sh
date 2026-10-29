@@ -11,13 +11,16 @@ YAZI=${YAZI_BIN:-yazi}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 OUT=${XDND_OUT:-$(mktemp -d /tmp/tuios-xdnd-XXXX)}
 
-export DISPLAY=${XDND_DISPLAY:-:91} LIBGL_ALWAYS_SOFTWARE=1
+# X11 only: on a Wayland desktop kitty would take WAYLAND_DISPLAY over the
+# Xvfb that DISPLAY names, and the GTK helper the same.
+unset WAYLAND_DISPLAY
+export DISPLAY=${XDND_DISPLAY:-:91} LIBGL_ALWAYS_SOFTWARE=1 GDK_BACKEND=x11
 # 1280x800, which the window positions below are laid out for.
 xdpyinfo >/dev/null 2>&1 || { Xvfb "$DISPLAY" -screen 0 1280x800x24 >/dev/null 2>&1 & sleep 1; }
 
 W=$OUT/$1
 rm -rf "$W"; mkdir -p "$W/src" "$W/dst" "$W/root"
-KOPT=(--config NONE -o enable_audio_bell=no -o remember_window_size=no)
+KOPT=(--config NONE -o enable_audio_bell=no -o remember_window_size=no -o linux_display_server=x11)
 
 # An isolated tuios: its own runtime, config and home. The runtime directory
 # is short because a unix socket path is limited to 108 bytes.

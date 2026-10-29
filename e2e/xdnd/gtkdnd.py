@@ -1,5 +1,6 @@
-"""A GTK 3 window that takes or offers a drag of text/uri-list over X11 XDND,
-standing in for a file manager or a browser.
+"""A GTK 3 window that takes or offers a drag of text/uri-list through the
+desktop (XDND on X11, the data device protocol on Wayland), standing in for a
+file manager or a browser.
 
 usage: gtkdnd.py target LOG       write each dropped URI list to LOG
        gtkdnd.py source FILE...   offer FILE... as a URI list when dragged

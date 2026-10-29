@@ -136,6 +136,8 @@ func main() {
 	// do. The answer is logged; a test counts it.
 	send("t=q", nil)
 	_, _ = os.Stdout.WriteString("\x1b[?1002h\x1b[?1006h")
+	// Split so the command line that starts the peer, which the pane echoes,
+	// does not show the marker before the peer is up.
 	_, _ = os.Stdout.WriteString("DNDPEER-" + "READY\r\n")
 
 	// Streams of dropped data by MIME index, joined until the empty close.

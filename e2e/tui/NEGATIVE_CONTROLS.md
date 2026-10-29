@@ -10286,48 +10286,39 @@ refused.
 ## Drag and drop between panes, and the bridge to kitty
 
 `TestDnDBetweenPanes` drives a real tuios against two panes running the
-`dndpeer` protocol peer: a drop over the protocol, a drop on a pane without
-it, and a drop back into the source pane. The scripts in `e2e/xdnd` drive a
-real kitty 0.49 under Xvfb with X11 drags made by xdotool; see the README
-there. Run on 2026-10-28 on Linux, based on `7709625`.
+`dndpeer` protocol peer, which reads messages as yazi reads them: a drop over
+the protocol, a drop on a pane without it, a gesture the program ignores, and
+a drop back into the source pane. `TestDnDRegistrationOutlivesTheClient`
+starts the peers, then either replaces the client with `attach -d` and drags
+in the new one, or attaches a second client before the peers start and drags
+in the first. The scripts in `e2e/xdnd` drive a real kitty 0.49 under Xvfb
+with X11 drags made by xdotool, and under a headless sway on native Wayland;
+see the README there. Run on 2026-10-29 on Linux with Go 1.27.3, based on
+`7709625`.
+
+Each control cuts the line that wires the feature in, not the function it
+calls.
 
 | Control: what was cut | Test failure | Verdict |
 | --- | --- | --- |
-| `DnDMotion` returns false at once, so tuios never sees the gesture | all three subtests of `TestDnDBetweenPanes`: the source log never reaches "finished" | **caught** |
-| `dndHostProbe` returns nil, so tuios never registers with kitty | every `e2e/xdnd` check that needs kitty fails: both drops from outside, both drags out, both GTK directions, and "the drag ran as the window system's drag" | **caught** |
-| the same, for `s3_same_window.sh`'s copy | the file is still copied, because tuios's own drag between panes takes over without the bridge; only the check that kitty reported the drop fails | **guard**, by design |
-| `dndHostProbe` returns nil, on Wayland (`e2e/xdnd/wayland`) | the same checks fail as on X11, after the reader pane was made unfocused: before that, kitty's own paste of a drop into the focused pane put the path there without the bridge | **caught** |
+| `internal/input/mouse_motion.go`, the `o.DnDMotion(...)` call, so no motion reaches the drag | all four subtests of `TestDnDBetweenPanes` ("the drag label is not on screen mid-drag", "the target never got the drop data", "the pane never got the paste", "the source never saw the first gesture", "the source never heard the drag end") and both of `TestDnDRegistrationOutlivesTheClient` | **caught** |
+| `internal/app/update.go`, the `m.dndHostProbe()` command, so tuios never registers with kitty | every `e2e/xdnd` check that needs kitty, on X11 and on Wayland: both drops from outside, both drags out, both GTK directions, and "the drag ran as the window system's drag" | **caught** |
+| the same, for the file `s3_same_window.sh` copies | passes: tuios's own drag between panes takes over without the bridge. The check that kitty reported the drop fails beside it, which is what tells the two apart | **guard**, by design |
 | the same, for "no data request for its own drag went to kitty" | passes: with no bridge there are no requests | **guard**, by design |
+| `internal/app/session.go`, both `m.takeDaemonDnD(...)` calls, so a late client takes no registration from the daemon | `.../a_client_attached_after_the_programs_started`: "the target never got the drop data" | **caught** |
+| `internal/app/dnd.go`, the `dndShared` gates in `dndRefuse` and on the `t=q` answer, so every client answers for itself | `.../two_clients_attached`: "the source got 3 answers to its query, want 1" (the daemon's and both clients'), and "a client that did not make the drag answered for it" | **caught** |
+| `internal/session/session.go`, the `pty.dnd.note(data)` call in the daemon's `PrivateOSC`, so the daemon neither records nor answers | both registration subtests: "the target never got the drop data" and "the source got 0 answers to its query, want 1" | **caught** |
+| the MIME list sent with the first move only, not with every move | `source_to_target_over_the_protocol` and the ignored-gesture subtest: the peer refuses every move after the first, no drop comes | **caught** |
+| a new press leaves a gesture the program ignored as the current drag | the ignored-gesture subtest: "the target never got the drop data of the second gesture" | **caught** |
+| the position keys left out at zero (`t=e:x=4` without `y=0`, a move without `o`), as before the encoder wrote them | the protocol subtest, the fallback subtest and both registration subtests: the peers drop such a message, as yazi does | **caught** |
 
-Each negative step has its positive half on the build with the code in place:
-all three subtests pass, and all nine `e2e/xdnd` checks pass.
+The subtests each control leaves passing are its positive half: under every
+pane-level control the other subtests of the same fixture pass, and the
+`e2e/xdnd` checks pass on the build with the code in place, nine on X11 and
+nine on Wayland.
 
-### Two things a first run on a desktop found
-
-The target peer reads the MIME list from every move and refuses a move whose
-list holds no type it takes, as yazi does, and a source peer can leave the
-first gesture unanswered (`DNDPEER_IGNORE_GESTURES=1`). Run on 2026-10-28 on
-Linux (KDE Wayland).
-
-| Control: what was cut | Test failure | Verdict |
-| --- | --- | --- |
-| the MIME list sent with the first move only, not with every move | `source_to_target_over_the_protocol` and the ignored-gesture subtest: the target refuses every move after the first, no drop comes | **caught** |
-| a new press leaves a gesture the program ignored as the current drag | the ignored-gesture subtest: the second drag is never offered | **caught** |
-| the position keys left out at zero (`t=e:x=4` without `y=0`, a move without `o`), as before the encoder wrote them | both peers drop such a message, as yazi does: the protocol subtest, the fallback subtest and both registration subtests fail | **caught** |
-
-The fallback paste and the same-pane subtests pass under both, which is their
-positive half.
-
-### The registration kept by the daemon
-
-`TestDnDRegistrationOutlivesTheClient` starts the two peers, then either
-replaces the client with `attach -d` and drags in the new one, or attaches a
-second client before the peers start and drags in the first. Run on 2026-10-28
-on Linux.
-
-| Control: what was cut | Test failure | Verdict |
-| --- | --- | --- |
-| `takeDaemonDnD` returns at once, so a late client knows nothing of the peers | the late-client subtest: the target never gets the drop data | **caught** |
-| `dndShared` reports false, so every client answers for itself | the two-client subtest: each peer gets 3 answers to its query (the daemon's and both clients'), and the source an error from the client that did not make the drag | **caught** |
-
-Each control leaves the other subtest passing, which is its positive half.
+Repeat with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run
+'TestDnDBetweenPanes|TestDnDRegistrationOutlivesTheClient' -v .` from
+`e2e/tui`, and `KITTY_BIN=... TUIOS_BIN=... YAZI_BIN=... bash
+e2e/xdnd/run_all.sh` for the kitty checks (`e2e/xdnd/README.md` lists what
+they need).
