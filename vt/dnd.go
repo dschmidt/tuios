@@ -200,6 +200,11 @@ const DnDMaxListBytes = 64 << 10
 // Add takes one chunk and reports the message to act on, or false when the
 // chunk completes nothing yet or belongs to a chain that was dropped.
 func (a *DnDAssembler) Add(cmd DnDCommand) (DnDCommand, bool) {
+	if cmd.Type == 'q' {
+		// A query may come in the middle of a chain, by the specification,
+		// and is no part of it.
+		return cmd, true
+	}
 	if !a.active {
 		if cmd.Type == 0 {
 			// A continuation with no chain to continue. Nothing to do with it.

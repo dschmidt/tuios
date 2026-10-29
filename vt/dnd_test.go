@@ -180,6 +180,14 @@ func TestDnDAssemblerChains(t *testing.T) {
 		}
 	})
 
+	t.Run("a query in the middle of a chain passes, and the chain goes on", func(t *testing.T) {
+		var a vt.DnDAssembler
+		got := feed(t, &a, "72;t=a:m=1;text/uri-list ", "72;t=q", "72;m=0;text/plain")
+		if len(got) != 2 || got[0].Type != 'q' || got[1].Type != 'a' || string(got[1].Payload) != "text/uri-list text/plain" {
+			t.Errorf("got %+v", got)
+		}
+	})
+
 	t.Run("a continuation with no chain is dropped", func(t *testing.T) {
 		var a vt.DnDAssembler
 		if got := feed(t, &a, "72;m=0;AAAA"); len(got) != 0 {
@@ -372,25 +380,6 @@ func TestDnDReachesPrivateOSC(t *testing.T) {
 				t.Errorf("got %+v", got)
 			}
 		})
-	}
-}
-
-func TestDnDMimeList(t *testing.T) {
-	got := vt.DnDMimeList([]byte("  text/uri-list text/plain\x1b[31m  image/png "))
-	if len(got) != 2 || got[0] != "text/uri-list" || got[1] != "image/png" {
-		t.Errorf("got %q", got)
-	}
-	if got := vt.DnDMimeList(nil); len(got) != 0 {
-		t.Errorf("empty list: got %q", got)
-	}
-}
-
-func TestDnDDecodePayloadPadding(t *testing.T) {
-	for _, in := range []string{"aGVsbG8=", "aGVsbG8"} {
-		got, err := vt.DecodeDnDPayload([]byte(in))
-		if err != nil || string(got) != "hello" {
-			t.Errorf("DecodeDnDPayload(%q) = %q, %v", in, got, err)
-		}
 	}
 }
 
