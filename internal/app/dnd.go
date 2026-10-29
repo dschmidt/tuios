@@ -44,10 +44,11 @@ import (
 // rights. A drop into the pane the drag came from is refused with EPERM, as
 // kitty refuses it.
 //
-// Not here yet: the bridge to a host terminal that speaks the protocol, drops
-// onto a pane whose shell runs on another machine (which should go through
-// the file transfer DropPaste uses), and registrations kept in the daemon
-// rather than in each client.
+// The bridge to a host terminal that speaks the protocol is in dnd_host.go,
+// and the registrations the daemon keeps for the clients in
+// session/dnd_registration.go. Not here yet: a drop onto a pane whose shell
+// runs on another machine, which should go through the file transfer
+// DropPaste uses rather than carry paths that mean nothing over there.
 
 // DnDMsg is one message a pane's program sent, chunk by chunk.
 type DnDMsg struct {
@@ -128,8 +129,13 @@ func (m *OS) setupDnD(window *terminal.Window) {
 func (m *OS) handleDnDWake() {
 	msgs, dropped := m.ensureDnDInbox().drain()
 	if dropped {
-		// A stream with a hole in it is not data anyone should get.
+		// A stream with a hole in it is not data anyone should get, and a
+		// chain with a chunk missing never ends on its own.
 		m.dndCancel("the drag and drop inbox overflowed")
+		for _, p := range m.dndPanes {
+			p.asm.Reset()
+			clear(p.streams)
+		}
 	}
 	for _, msg := range msgs {
 		m.onDnD(msg)
@@ -140,17 +146,11 @@ func (m *OS) handleDnDWake() {
 // assembler and data streams of that pane.
 type dndPane struct {
 	asm vt.DnDAssembler
-	// accepts says the program sent t=a; acceptMimes is the list it gave.
-	accepts     bool
-	acceptMimes []string
-	// offers says the program sent t=o:x=1.
-	offers bool
+	// accepts says the program sent t=a, offers that it sent t=o:x=1.
+	accepts, offers bool
 	// id is the multiplexer id (i key) the program used, echoed back on
 	// everything sent to it.
 	id int
-	// machineID is what the program sent with t=a:x=1 or t=o:x=1. Unused
-	// yet: every pane of this client counts as local.
-	machineID string
 	// streams are the data streams in progress from this pane, by type and
 	// index: pre-sent data (p), item data for a request (e), and the text
 	// drag image (p with a negative index, keyed by it).
@@ -167,10 +167,9 @@ type dndStream struct {
 	enc []byte
 }
 
-// dndMaxStreamBytes bounds one stream's encoded bytes. The specification
-// asks a terminal to take 64 MB of pre-sent data; this is a proof of
-// concept, and what crosses it is paths.
-const dndMaxStreamBytes = 16 << 20
+// dndMaxStreamBytes bounds one stream's encoded bytes, at the 64 MB of
+// pre-sent data the specification asks a terminal to take.
+const dndMaxStreamBytes = 64 << 20
 
 // dndPaneFor is the record for a window, made on first use.
 func (m *OS) dndPaneFor(id string) *dndPane {
@@ -212,19 +211,31 @@ func (m *OS) dndWindowClosed(id string) {
 // shows. Every message in and out goes through it, which is how an exchange
 // with a program is read back.
 func dndLog(format string, args ...any) {
-	path := os.Getenv("TUIOS_DND_LOG")
-	if path == "" {
-		if os.Getenv("TUIOS_DEBUG_INTERNAL") != "1" {
-			return
+	dndLogOnce.Do(func() {
+		dndLogPath = os.Getenv("TUIOS_DND_LOG")
+		if dndLogPath == "" && os.Getenv("TUIOS_DEBUG_INTERNAL") == "1" {
+			dndLogPath = debuglog.Path
 		}
-		path = debuglog.Path
+	})
+	if dndLogPath == "" {
+		return
 	}
-	f, err := debuglog.Open(path)
+	f, err := debuglog.Open(dndLogPath)
 	if err != nil {
 		return
 	}
 	defer func() { _ = f.Close() }()
 	_, _ = fmt.Fprintf(f, "[%s] DND: %s\n", time.Now().Format("15:04:05.000"), fmt.Sprintf(format, args...))
+}
+
+var (
+	dndLogOnce sync.Once
+	dndLogPath string
+)
+
+// dndFmt is a message as the log shows it.
+func dndFmt(cmd vt.DnDCommand) string {
+	return fmt.Sprintf("t=%c o=%d x=%d y=%d X=%d Y=%d m=%v payload=%q", cmd.Type, cmd.Op, cmd.X, cmd.Y, cmd.PX, cmd.PY, cmd.More, cmd.Payload)
 }
 
 // takeDaemonDnD takes the drag and drop registration the daemon kept for a
@@ -240,7 +251,7 @@ func (m *OS) takeDaemonDnD(w *terminal.Window, ws *session.WindowState) {
 		return
 	}
 	p := m.dndPaneFor(w.ID)
-	p.accepts, p.acceptMimes, p.offers, p.id = ws.DnDAccepts, append([]string(nil), ws.DnDMimes...), ws.DnDOffers, ws.DnDID
+	p.accepts, p.offers, p.id = ws.DnDAccepts, ws.DnDOffers, ws.DnDID
 	dndLog("took registration of %s from the daemon: accepts=%v offers=%v", shortID(w.ID), p.accepts, p.offers)
 }
 
@@ -254,29 +265,37 @@ func (m *OS) dndShared(id string) bool {
 	return w != nil && w.DaemonMode
 }
 
-// dndSend writes one message to a pane's program, with the pane's
-// multiplexer id.
-func (m *OS) dndSend(id string, cmd vt.DnDCommand) {
+// dndTo is the pane a message goes to and the multiplexer id it carries:
+// the message's own, or the one the pane's program registered with.
+func (m *OS) dndTo(id string, cmdID int) (*terminal.Window, int) {
 	w := m.windowByID(id)
+	if w == nil {
+		return nil, 0
+	}
+	if p := m.dndPanes[id]; p != nil && cmdID == 0 {
+		cmdID = p.id
+	}
+	return w, cmdID
+}
+
+// dndSend writes one message to a pane's program.
+func (m *OS) dndSend(id string, cmd vt.DnDCommand) {
+	w, cmdID := m.dndTo(id, cmd.ID)
 	if w == nil {
 		return
 	}
-	if p := m.dndPanes[id]; p != nil && cmd.ID == 0 {
-		cmd.ID = p.id
-	}
-	dndLog("send %s t=%c o=%d x=%d y=%d X=%d Y=%d payload=%q", shortID(id), cmd.Type, cmd.Op, cmd.X, cmd.Y, cmd.PX, cmd.PY, cmd.Payload)
+	cmd.ID = cmdID
+	dndLog("send %s %s", shortID(id), dndFmt(cmd))
 	_ = w.SendInput(cmd.Encode())
 }
 
 // dndSendData writes a data response to a pane's program.
 func (m *OS) dndSendData(id string, hdr vt.DnDCommand, data []byte) {
-	w := m.windowByID(id)
+	w, cmdID := m.dndTo(id, hdr.ID)
 	if w == nil {
 		return
 	}
-	if p := m.dndPanes[id]; p != nil && hdr.ID == 0 {
-		hdr.ID = p.id
-	}
+	hdr.ID = cmdID
 	dndLog("send %s t=%c x=%d y=%d data=%d bytes", shortID(id), hdr.Type, hdr.X, hdr.Y, len(data))
 	_ = w.SendInput(vt.EncodeDnDData(hdr, data))
 }
@@ -285,6 +304,17 @@ func (m *OS) dndSendData(id string, hdr vt.DnDCommand, data []byte) {
 // drag source) to a pane's program.
 func (m *OS) dndError(id string, t byte, x, y int, errno, why string) {
 	m.dndSend(id, vt.DnDCommand{Type: t, X: x, Y: y, Payload: vt.DnDErrorPayload(errno, why)})
+}
+
+// dndRefuse is dndError for a message that belongs to no drag of this
+// client. A daemon's pane may be heard by another client whose drag it is,
+// and that client answers; this one stays silent rather than send an error
+// into an exchange it is not part of.
+func (m *OS) dndRefuse(id string, t byte, x, y int, errno, why string) {
+	if m.dndShared(id) {
+		return
+	}
+	m.dndError(id, t, x, y, errno, why)
 }
 
 // onDnD acts on one message from a pane's program.
@@ -298,7 +328,7 @@ func (m *OS) onDnD(msg DnDMsg) {
 		p.id = cmd.ID
 	}
 	id := msg.WindowID
-	dndLog("recv %s t=%c o=%d x=%d y=%d X=%d Y=%d m=%v payload=%q", shortID(id), cmd.Type, cmd.Op, cmd.X, cmd.Y, cmd.PX, cmd.PY, cmd.More, cmd.Payload)
+	dndLog("recv %s %s", shortID(id), dndFmt(cmd))
 	switch cmd.Type {
 	case 'q':
 		// Yes, this terminal speaks the protocol. The payload names optional
@@ -307,12 +337,10 @@ func (m *OS) onDnD(msg DnDMsg) {
 			m.dndSend(id, vt.DnDCommand{Type: 'q', ID: cmd.ID})
 		}
 	case 'a':
-		if cmd.X == 1 {
-			p.machineID = string(cmd.Payload)
-			return
+		// x=1 carries a machine id. Every pane of this client is local.
+		if cmd.X != 1 {
+			p.accepts = true
 		}
-		p.accepts = true
-		p.acceptMimes = vt.DnDMimeList(cmd.Payload)
 	case 'A':
 		p.accepts = false
 		if d := m.dndDrag; d != nil && d.dropTarget == id {

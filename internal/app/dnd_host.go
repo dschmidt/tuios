@@ -73,7 +73,7 @@ func (m *OS) dndHostProbe() tea.Cmd {
 // dndHostSend queues one message for the host.
 func (m *OS) dndHostSend(cmd vt.DnDCommand) {
 	cmd.ID = 0
-	dndLog("host send t=%c o=%d x=%d y=%d X=%d Y=%d m=%v payload=%q", cmd.Type, cmd.Op, cmd.X, cmd.Y, cmd.PX, cmd.PY, cmd.More, cmd.Payload)
+	dndLog("host send %s", dndFmt(cmd))
 	m.dndHost.out = append(m.dndHost.out, cmd.Encode()...)
 }
 
@@ -112,7 +112,7 @@ func (m *OS) handleHostDnD(msg tea.Msg) (tea.Cmd, bool) {
 	body = strings.TrimSuffix(strings.TrimSuffix(body, "\x1b\\"), "\x07")
 	if cmd, ok := vt.ParseDnD([]byte(body)); ok {
 		if cmd, ok := m.dndHost.asm.Add(cmd); ok {
-			dndLog("host recv t=%c o=%d x=%d y=%d X=%d Y=%d m=%v payload=%q", cmd.Type, cmd.Op, cmd.X, cmd.Y, cmd.PX, cmd.PY, cmd.More, cmd.Payload)
+			dndLog("host recv %s", dndFmt(cmd))
 			m.onHostDnD(cmd)
 		}
 	}

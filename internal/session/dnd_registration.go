@@ -33,7 +33,6 @@ type dndRegistration struct {
 	// asm joins chunked messages. Only the vtWriter touches it.
 	asm     vt.DnDAssembler
 	accepts bool
-	mimes   []string
 	offers  bool
 	// id is the multiplexer id (i key) the program used, which a client
 	// echoes on everything it sends that program.
@@ -43,7 +42,6 @@ type dndRegistration struct {
 // dndRegistrationFact is a copy of a registration for a state snapshot.
 type dndRegistrationFact struct {
 	accepts bool
-	mimes   []string
 	offers  bool
 	id      int
 }
@@ -66,16 +64,15 @@ func (r *dndRegistration) note(body []byte) []byte {
 	}
 	switch cmd.Type {
 	case 'q':
-		return vt.DnDCommand{Type: 'q', ID: cmd.ID}.Encode()
+		return vt.DnDCommand{Type: 'q', ID: r.id}.Encode()
 	case 'a':
-		if cmd.X == 1 {
-			// A machine id. Every pane is local to the daemon that runs it.
-			return nil
+		// x=1 carries a machine id. Every pane is local to the daemon that
+		// runs it.
+		if cmd.X != 1 {
+			r.accepts = true
 		}
-		r.accepts = true
-		r.mimes = vt.DnDMimeList(cmd.Payload)
 	case 'A':
-		r.accepts, r.mimes = false, nil
+		r.accepts = false
 	case 'o':
 		switch cmd.X {
 		case 1:
@@ -91,5 +88,5 @@ func (r *dndRegistration) note(body []byte) []byte {
 func (r *dndRegistration) fact() dndRegistrationFact {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return dndRegistrationFact{accepts: r.accepts, mimes: append([]string(nil), r.mimes...), offers: r.offers, id: r.id}
+	return dndRegistrationFact{accepts: r.accepts, offers: r.offers, id: r.id}
 }

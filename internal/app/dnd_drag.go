@@ -1,7 +1,6 @@
 package app
 
 import (
-	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -253,25 +252,16 @@ func (m *OS) dndHover(x, y int) {
 		if d.viaHost() {
 			m.dndHostTargetChanged(w)
 		}
-		if w == nil {
-			return
-		}
-		if p := m.dndPanes[id]; p != nil && p.accepts {
-			// Every move carries the MIME list, as kitty's do. The
-			// specification allows sending it once, but yazi reads the
-			// list from each move and takes an empty one as no types to
-			// drop, so it refused every move after the first. The pane
-			// answers with what it wants (onDnDTargetStatus).
-			px := m.dndPixel(w, tx, ty)
-			m.dndSend(id, vt.DnDCommand{Type: 'm', X: tx, Y: ty, PX: px.X, PY: px.Y, Op: d.flags,
-				Payload: []byte(strings.Join(d.mimes, " "))})
-		}
-		return
 	}
 	if w == nil {
 		return
 	}
 	if p := m.dndPanes[id]; p != nil && p.accepts {
+		// Every move carries the MIME list, as kitty's do. The specification
+		// allows sending it once, but yazi reads the list from each move and
+		// takes an empty one as no types to drop, so it refused every move
+		// after the first. The pane answers with what it wants
+		// (onDnDTargetStatus).
 		px := m.dndPixel(w, tx, ty)
 		m.dndSend(id, vt.DnDCommand{Type: 'm', X: tx, Y: ty, PX: px.X, PY: px.Y, Op: d.flags,
 			Payload: []byte(strings.Join(d.mimes, " "))})
@@ -375,7 +365,15 @@ func (m *OS) dndPasteFallback(data []byte) {
 	w := m.windowByID(d.dropTarget)
 	text := ""
 	if d.mimes[d.fallbackIdx] == "text/uri-list" {
-		text = dndPasteTextForURIs(string(data))
+		if paths, ok := dndURIPaths(string(data)); ok {
+			quoted := make([]string, len(paths))
+			for i, p := range paths {
+				quoted[i] = pastePathText(p)
+			}
+			text = strings.Join(quoted, " ")
+		} else {
+			text = vt.SanitizePaste(strings.Join(dndURILines(string(data)), " "))
+		}
 	} else {
 		text = vt.SanitizePaste(string(data))
 	}
@@ -462,7 +460,6 @@ func (m *OS) onDnDOffer(id string, p *dndPane, cmd vt.DnDCommand) {
 	switch cmd.X {
 	case 1:
 		p.offers = true
-		p.machineID = string(cmd.Payload)
 		return
 	case 2:
 		p.offers = false
@@ -477,9 +474,7 @@ func (m *OS) onDnDOffer(id string, p *dndPane, cmd vt.DnDCommand) {
 		// takes an offer at any time; here the button has to be held in the
 		// pane, which is the one check the protocol leaves to the terminal.
 		// The gesture may be another client's, which answers it.
-		if !m.dndShared(id) {
-			m.dndError(id, 'E', 0, 0, "EPERM", "no drag gesture in this pane")
-		}
+		m.dndRefuse(id, 'E', 0, 0, "EPERM", "no drag gesture in this pane")
 		return
 	}
 	if d.released {
@@ -506,9 +501,7 @@ func (m *OS) onDnDOffer(id string, p *dndPane, cmd vt.DnDCommand) {
 func (m *OS) onDnDPresent(id string, p *dndPane, cmd vt.DnDCommand) {
 	d := m.dndDrag
 	if d == nil || d.source != id || d.phase != dndBuilding {
-		if !m.dndShared(id) {
-			m.dndError(id, 'E', 0, 0, "EINVAL", "no drag is being built")
-		}
+		m.dndRefuse(id, 'E', 0, 0, "EINVAL", "no drag is being built")
 		return
 	}
 	if cmd.X >= 0 && cmd.X >= len(d.mimes) {
@@ -527,7 +520,7 @@ func (m *OS) onDnDPresent(id string, p *dndPane, cmd vt.DnDCommand) {
 		// A bitmap image. tuios draws text, so it keeps none.
 		return
 	}
-	data, done, ok := m.dndStreamAdd(id, p, 'p', cmd)
+	data, done, ok := m.dndStreamAdd(p, 'p', cmd)
 	if !ok {
 		m.dndError(id, 'E', 0, 0, "EFBIG", "too much pre-sent data")
 		m.dndDrag = nil
@@ -548,7 +541,7 @@ func (m *OS) onDnDPresent(id string, p *dndPane, cmd vt.DnDCommand) {
 // dndStreamAdd appends a chunk to a pane's stream for (typ, cmd.X) and
 // returns the decoded data when the chunk ended it. ok is false past the
 // size bound, and the stream is dropped.
-func (m *OS) dndStreamAdd(_ string, p *dndPane, typ byte, cmd vt.DnDCommand) (data []byte, done, ok bool) {
+func (m *OS) dndStreamAdd(p *dndPane, typ byte, cmd vt.DnDCommand) (data []byte, done, ok bool) {
 	key := dndStreamKey{typ: typ, idx: cmd.X}
 	if typ == 'e' {
 		key.idx = cmd.Y
@@ -584,9 +577,7 @@ func (m *OS) onDnDStart(id string, cmd vt.DnDCommand) {
 		return
 	}
 	if d == nil || d.source != id || d.phase != dndBuilding {
-		if !m.dndShared(id) {
-			m.dndError(id, 'E', 0, 0, "EINVAL", "no drag is being built")
-		}
+		m.dndRefuse(id, 'E', 0, 0, "EINVAL", "no drag is being built")
 		return
 	}
 	if d.released {
@@ -641,13 +632,18 @@ func (m *OS) onDnDItemData(id string, p *dndPane, cmd vt.DnDCommand) {
 		}
 		return
 	}
-	if d == nil || d.source != id || d.phase != dndDropped || cmd.Y < 0 || cmd.Y >= len(d.mimes) {
-		if !m.dndShared(id) {
-			m.dndError(id, 'E', 0, cmd.Y, "EINVAL", "no request is open for this data")
-		}
+	if d == nil || d.source != id {
+		m.dndRefuse(id, 'E', 0, cmd.Y, "EINVAL", "no request is open for this data")
 		return
 	}
-	data, done, ok := m.dndStreamAdd(id, p, 'e', cmd)
+	if d.phase != dndDropped || cmd.Y < 0 || cmd.Y >= len(d.mimes) {
+		// Data before the drop, or for a type the offer did not name. The
+		// specification ends the drag on it.
+		m.dndError(id, 'E', 0, cmd.Y, "EINVAL", "no request is open for this data")
+		m.dndCancel("the source sent data nobody asked for")
+		return
+	}
+	data, done, ok := m.dndStreamAdd(p, 'e', cmd)
 	if !ok {
 		m.dndError(id, 'E', 0, cmd.Y, "EFBIG", "too much data")
 		m.dndCancel("the source sent too much data")
@@ -744,9 +740,7 @@ func (m *OS) onDnDRequest(id string, cmd vt.DnDCommand) {
 	if d == nil || d.phase != dndDropped || d.dropTarget != id || d.fallback {
 		// The specification says this error alone ends nothing. The drop may
 		// be another client's, which serves it.
-		if !m.dndShared(id) {
-			m.dndError(id, 'R', cmd.X, cmd.Y, "EPERM", "drop data can only be requested after a drop")
-		}
+		m.dndRefuse(id, 'R', cmd.X, cmd.Y, "EPERM", "drop data can only be requested after a drop")
 		return
 	}
 	if cmd.X == 0 {
@@ -757,9 +751,6 @@ func (m *OS) onDnDRequest(id string, cmd vt.DnDCommand) {
 	switch {
 	case idx < 0 || idx >= len(d.mimes):
 		m.dndError(id, 'R', cmd.X, cmd.Y, "ENOENT", "no such MIME type in the drop")
-		m.dndFinish(0)
-	case d.source == id:
-		m.dndError(id, 'R', cmd.X, cmd.Y, "EPERM", "cannot drop into self window")
 		m.dndFinish(0)
 	case cmd.Y != 0 || cmd.PY != 0:
 		// The contents of a file behind a URI. tuios reads no file for a
@@ -782,53 +773,29 @@ func (m *OS) onDnDRequest(id string, cmd vt.DnDCommand) {
 	}
 }
 
-// dndPasteTextForURIs is the paste for a dropped text/uri-list: each
-// file:// URI on this machine as a quoted path, any other URI as itself,
-// space separated. A URI naming another host stays a URI: the path is not
-// one here.
-func dndPasteTextForURIs(list string) string {
-	var parts []string
+// dndURILines are the entries of a text/uri-list: one URI a line, comment
+// lines dropped.
+func dndURILines(list string) []string {
+	var lines []string
 	for line := range strings.SplitSeq(list, "\n") {
 		line = strings.TrimRight(line, "\r")
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+		if line != "" && !strings.HasPrefix(line, "#") {
+			lines = append(lines, line)
 		}
-		if p, ok := dndLocalFilePath(line); ok {
-			parts = append(parts, pastePathText(p))
-			continue
-		}
-		parts = append(parts, vt.SanitizePaste(line))
 	}
-	return strings.Join(parts, " ")
+	return lines
 }
 
-// dndLocalFilePath is the path of a file:// URI with no host or localhost.
-func dndLocalFilePath(uri string) (string, bool) {
-	u, err := url.Parse(uri)
-	if err != nil || u.Scheme != "file" || (u.Host != "" && u.Host != "localhost") || u.Path == "" {
-		return "", false
+// dndURIPaths are the paths a text/uri-list names, read by the parser a
+// dropped paste goes through, or false when an entry is not a file on this
+// machine: another scheme, or a file:// with a host. Such a list is pasted
+// as the URIs it is; a path on another machine is not one here.
+func dndURIPaths(list string) ([]string, bool) {
+	lines := dndURILines(list)
+	if len(lines) == 0 {
+		return nil, false
 	}
-	if strings.ContainsRune(u.Path, 0) || !strings.HasPrefix(u.Path, "/") {
-		return "", false
-	}
-	return u.Path, true
-}
-
-// dndURINames are the file names a text/uri-list names, for the label.
-func dndURINames(list string) []string {
-	var names []string
-	for line := range strings.SplitSeq(list, "\n") {
-		line = strings.TrimRight(line, "\r")
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if p, ok := dndLocalFilePath(line); ok {
-			names = append(names, path.Base(p))
-			continue
-		}
-		names = append(names, line)
-	}
-	return names
+	return parseDroppedPaths(strings.Join(lines, "\n"))
 }
 
 // dndLabelText cleans text from a program for the label: printable, one
@@ -855,7 +822,12 @@ func (m *OS) renderDnDLabel() *lipgloss.Layer {
 	what := ""
 	if idx := dndMimeIndex(d.mimes, "text/uri-list"); idx >= 0 {
 		if data, ok := d.presented[idx]; ok {
-			names := dndURINames(string(data))
+			names := dndURILines(string(data))
+			if paths, ok := dndURIPaths(string(data)); ok {
+				for i, p := range paths {
+					names[i] = path.Base(p)
+				}
+			}
 			switch {
 			case len(names) == 0:
 				what = "no files"
@@ -874,9 +846,9 @@ func (m *OS) renderDnDLabel() *lipgloss.Layer {
 
 	from := "a pane"
 	if w := m.windowByID(d.source); w != nil {
-		from = dndPaneName(w)
+		from = m.dndPaneName(w)
 	}
-	text := what + " — from: " + from
+	text := what + " from " + from
 	if d.icon != "" {
 		text += "  " + d.icon
 	}
@@ -890,17 +862,9 @@ func (m *OS) renderDnDLabel() *lipgloss.Layer {
 }
 
 // dndPaneName names a pane for the label: its machine first when its shell
-// runs elsewhere, then its name or title.
-func dndPaneName(w *terminal.Window) string {
-	name := ""
-	switch {
-	case w.CustomName != "":
-		name = printableTitle(w.CustomName)
-	case w.Title() != "" && !isDefaultTitle(w.Title(), w.ID):
-		name = printableTitle(w.Title())
-	default:
-		name = "pane " + shortID(w.ID)
-	}
+// runs elsewhere, then the name the context menu would show.
+func (m *OS) dndPaneName(w *terminal.Window) string {
+	name := printableTitle(contextMenuWindowName(m, m.windowIndexByID(w.ID), "pane "+shortID(w.ID)))
 	if w.Host != "" {
 		name = w.Host + ":" + name
 	}

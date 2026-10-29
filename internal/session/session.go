@@ -135,14 +135,13 @@ type WindowState struct {
 	// folder on any disk it can reach.
 	CwdHost string `json:"cwd_host,omitempty"`
 	// DnDAccepts and DnDOffers say the pane's program registered for drag
-	// and drop (OSC 72): it takes drops of DnDMimes, or offers drags. DnDID
-	// is the multiplexer id it used. A live fact like CwdHost: a client that
+	// and drop (OSC 72): it takes drops, or offers drags. DnDID is the
+	// multiplexer id it used. A live fact like CwdHost: a client that
 	// attached after the program started never saw the registration. See
 	// dnd_registration.go.
-	DnDAccepts bool     `json:"dnd_accepts,omitempty"`
-	DnDMimes   []string `json:"dnd_mimes,omitempty"`
-	DnDOffers  bool     `json:"dnd_offers,omitempty"`
-	DnDID      int      `json:"dnd_id,omitempty"`
+	DnDAccepts bool `json:"dnd_accepts,omitempty"`
+	DnDOffers  bool `json:"dnd_offers,omitempty"`
+	DnDID      int  `json:"dnd_id,omitempty"`
 	// Unplaced marks a window the daemon created whose X/Y/Width/Height are a
 	// nominal box rather than a position anyone chose. The daemon has no viewport
 	// and cannot place a window; a client that receives an unplaced window puts it
@@ -2890,7 +2889,7 @@ func (s *Session) fillLiveFacts(state *SessionState) {
 		w.CwdHost = place.elsewhere
 		// The drag and drop registration is live too, and the daemon's alone.
 		dnd := live[w.PTYID].dnd
-		w.DnDAccepts, w.DnDMimes, w.DnDOffers, w.DnDID = dnd.accepts, dnd.mimes, dnd.offers, dnd.id
+		w.DnDAccepts, w.DnDOffers, w.DnDID = dnd.accepts, dnd.offers, dnd.id
 		switch {
 		case place.cwd != "":
 			w.Cwd = place.cwd
