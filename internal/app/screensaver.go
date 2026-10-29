@@ -12,7 +12,8 @@ import (
 )
 
 // The screen saver animates a snapshot of the screen after a spell with no
-// input, and stops on the first key or pointer movement.
+// input, or draws a scene of its own (screensaver_scene.go), and stops on the
+// first key or pointer movement.
 //
 // It costs nothing at idle. Two rules make that true, and both matter:
 //
@@ -44,8 +45,13 @@ type screensaverState struct {
 	// it rather than assuming it fired at the right moment.
 	lastInput time.Time
 
-	engine *tfx.Engine
-	effect tfx.Effect
+	// anim is the running animation: an effect over the capture, or a scene.
+	// See screensaver_scene.go.
+	anim saverAnimation
+	// scene is true when anim draws its own picture and holds no capture. A
+	// scene survives a resize by being rebuilt at the new size; an effect
+	// cannot, because its capture is of a screen that is gone.
+	scene bool
 	// name is the running effect, for the hint line.
 	name string
 	// frame is the last rendered frame, held so a repaint that is not a new
@@ -207,11 +213,30 @@ func (m *OS) startScreensaver(cfg config.ScreensaverConfig) bool {
 	if width < 8 || height < 4 {
 		return false
 	}
+	name := cfg.EffectName()
+	if config.IsScreensaverScene(name) {
+		// A scene needs no capture: it draws its own picture at the render
+		// size, and the compositor is left alone.
+		anim := newSaverScene(name, width, height, &m.Settings)
+		if anim == nil {
+			return false
+		}
+		m.screensaver.capture = nil
+		m.screensaver.anim = anim
+		m.screensaver.scene = true
+		m.screensaver.name = name
+		m.screensaver.width, m.screensaver.height = width, height
+		m.screensaver.canvasWidth, m.screensaver.canvasHeight = width, height
+		m.screensaver.active = true
+		m.screensaver.frame = anim.Frame()
+		m.renderSkipped = false
+		return true
+	}
 	grid := m.composedGrid(0, 0, width, height)
 	if grid == nil {
 		return false
 	}
-	name, effect, fill := screensaverEffect(cfg.EffectName())
+	name, effect, fill := screensaverEffect(name)
 	if effect == nil {
 		return false
 	}
@@ -223,8 +248,8 @@ func (m *OS) startScreensaver(cfg config.ScreensaverConfig) bool {
 	}
 
 	m.screensaver.capture = capture
-	m.screensaver.engine = engine
-	m.screensaver.effect = effect
+	m.screensaver.anim = &effectAnimation{engine: engine, effect: effect}
+	m.screensaver.scene = false
 	m.screensaver.name = name
 	m.screensaver.width = width
 	m.screensaver.height = height
@@ -363,30 +388,51 @@ func (m *OS) handleScreensaverFrame() tea.Cmd {
 		// it without re-arming, or the timer would outlive the animation.
 		return nil
 	}
-	// A resize while the saver runs invalidates the capture it was built from.
-	// Rebuilding needs a screen to capture, and the screen is the animation, so
-	// the honest answer is to stop and let the idle timer bring it back.
-	if m.GetRenderWidth() != m.screensaver.width || m.GetRenderHeight() != m.screensaver.height {
-		m.stopScreensaver()
-		return m.armScreensaver()
-	}
-	if !m.screensaver.effect.Advance(m.screensaver.engine) {
+	// A resize while the saver runs invalidates the capture an effect was
+	// built from. Rebuilding needs a screen to capture, and the screen is the
+	// animation, so the honest answer is to stop and let the idle timer bring
+	// it back. A scene holds no capture, so it is simply built again at the
+	// new size and the rain keeps falling.
+	if w, h := m.GetRenderWidth(), m.GetRenderHeight(); w != m.screensaver.width || h != m.screensaver.height {
+		if !m.screensaver.scene {
+			m.stopScreensaver()
+			return m.armScreensaver()
+		}
+		m.screensaver.width, m.screensaver.height = w, h
+		m.screensaver.canvasWidth, m.screensaver.canvasHeight = w, h
+		if !m.restartScreensaverEffect() {
+			m.stopScreensaver()
+			return m.armScreensaver()
+		}
+	} else if !m.screensaver.anim.Advance() {
 		if !m.restartScreensaverEffect() {
 			m.stopScreensaver()
 			return m.armScreensaver()
 		}
 	} else {
-		m.screensaver.frame = m.screensaver.engine.Frame()
+		m.screensaver.frame = m.screensaver.anim.Frame()
 	}
 	m.renderSkipped = false
 	return screensaverFrameCmd(&m.Settings)
 }
 
-// restartScreensaverEffect builds a fresh effect over the same capture, so an
-// effect that runs to an end loops instead of freezing.
+// restartScreensaverEffect builds a fresh animation, so an effect that runs to
+// an end loops instead of freezing. An effect is rebuilt over the same capture;
+// a scene is built at the saver's current size.
 func (m *OS) restartScreensaverEffect() bool {
 	cfg := m.screensaverConfig()
-	name, effect, fill := screensaverEffect(cfg.EffectName())
+	name := cfg.EffectName()
+	if m.screensaver.scene {
+		anim := newSaverScene(name, m.screensaver.canvasWidth, m.screensaver.canvasHeight, &m.Settings)
+		if anim == nil {
+			return false
+		}
+		m.screensaver.anim = anim
+		m.screensaver.name = name
+		m.screensaver.frame = anim.Frame()
+		return true
+	}
+	name, effect, fill := screensaverEffect(name)
 	if effect == nil {
 		return false
 	}
@@ -399,8 +445,7 @@ func (m *OS) restartScreensaverEffect() bool {
 	if !ok {
 		return false
 	}
-	m.screensaver.engine = engine
-	m.screensaver.effect = effect
+	m.screensaver.anim = &effectAnimation{engine: engine, effect: effect}
 	m.screensaver.name = name
 	m.screensaver.frame = engine.Frame()
 	return true
@@ -420,8 +465,8 @@ func (m *OS) dismissScreensaver() tea.Cmd {
 // stopScreensaver drops the animation and everything it held.
 func (m *OS) stopScreensaver() {
 	m.screensaver.active = false
-	m.screensaver.engine = nil
-	m.screensaver.effect = nil
+	m.screensaver.anim = nil
+	m.screensaver.scene = false
 	m.screensaver.frame = ""
 	m.screensaver.capture = nil
 	m.screensaver.canvasWidth = 0

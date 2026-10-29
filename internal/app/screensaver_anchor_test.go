@@ -283,11 +283,12 @@ func TestEffectPreviewDoesNotMoveTheScreen(t *testing.T) {
 		t.Fatalf("the picker no longer offers %s", anchorTestEffect)
 	}
 	m.buildEffectPreview()
-	if p.engine == nil {
+	anim, ok := p.anim.(*effectAnimation)
+	if !ok || anim == nil {
 		t.Fatal("the preview would not build")
 	}
 
-	want, got := anchorCapture(p.capture), anchorFrame(p.engine)
+	want, got := anchorCapture(p.capture), anchorFrame(anim.engine)
 	dy, dx, match, total := anchorOffset(want, got)
 	glyphs := anchorGlyphs(want)
 	if dy != 0 || dx != 0 || match != glyphs {

@@ -505,6 +505,29 @@ transition off. The `fade` transition needs a truecolor terminal. On a terminal
 with fewer colors, tuios changes the colors in one frame. While the transition
 runs, the screen outside the circle does not change.
 
+## Screen saver
+
+`[screensaver]` animates the screen after a spell with no input. It is off
+unless you turn it on. `S` in window-management mode (`start_screensaver`)
+starts it at once, and the first key or pointer movement takes it down again,
+without reaching the pane.
+
+```toml
+[screensaver]
+enabled = true          # default: false
+idle_minutes = 10       # from 1 to 240
+effect = "random"       # random, cmatrix, or one effect by name
+while_busy = false      # start even while a pane runs a command or an agent
+```
+
+`effect` takes two kinds of saver. An effect animates a picture of the screen:
+it comes apart and reassembles, and the next effect begins. `random` runs a
+different effect each time. `cmatrix` is a scene, a screen saver in the classic
+sense: green glyphs rain down a black screen, in your theme's green, until you
+press a key. A scene survives a resize; an effect stops on one, because the
+screen it was built from is gone. The settings page lists every name and
+previews each one over your screen as you move through the list.
+
 ## Frame rate
 
 `appearance.max_fps` is the highest frame rate tuios draws at. Your terminal

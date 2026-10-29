@@ -28,10 +28,24 @@ const (
 	ScreensaverRandomEffect = "random"
 )
 
-// ScreensaverEffects is what the effect option accepts: the random choice plus
-// every effect the engine has registered. Deriving it from the engine is what
-// stops the list here and the list there drifting apart.
-var ScreensaverEffects = append([]string{ScreensaverRandomEffect}, tfx.Names()...)
+// ScreensaverSceneMatrix is the classic: green glyphs raining down a black
+// screen, after the film and the cmatrix program that put it in a terminal.
+const ScreensaverSceneMatrix = "cmatrix"
+
+// ScreensaverScenes are the screen savers in the classic sense. An effect
+// animates a capture of the screen and hands it back; a scene draws a picture
+// of its own and runs until someone presses a key. They are listed by name
+// here and built in internal/app, which is the one place that draws.
+var ScreensaverScenes = []string{ScreensaverSceneMatrix}
+
+// ScreensaverEffects is what the effect option accepts: the random choice, the
+// scenes, then every effect the engine has registered. Deriving the last part
+// from the engine is what stops the list here and the list there drifting
+// apart.
+var ScreensaverEffects = append(append([]string{ScreensaverRandomEffect}, ScreensaverScenes...), tfx.Names()...)
+
+// IsScreensaverScene reports whether name is a scene rather than an effect.
+func IsScreensaverScene(name string) bool { return slices.Contains(ScreensaverScenes, name) }
 
 // retiredScreensaverEffects are names that used to be accepted and are not any
 // more. A config naming one still loads: the name maps to its replacement

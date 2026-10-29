@@ -48,8 +48,9 @@ type effectPreview struct {
 	width  int
 	height int
 
-	engine *tfx.Engine
-	effect tfx.Effect
+	// anim is the animation on screen: an effect over the capture, or a scene
+	// at the capture's size. See screensaver_scene.go.
+	anim saverAnimation
 	// running is the effect actually on screen. It differs from the selected
 	// row only for "random", which resolves to a real effect each time it is
 	// built, and naming it is most of what the random row has to say.
@@ -147,7 +148,7 @@ func (m *OS) captureEffectPreview() {
 // every move, so the row under the cursor is the one animating.
 func (m *OS) buildEffectPreview() {
 	p := &m.effectPreview
-	p.engine, p.effect, p.running, p.frame = nil, nil, "", ""
+	p.anim, p.running, p.frame = nil, "", ""
 	if p.capture == nil {
 		return
 	}
@@ -158,7 +159,20 @@ func (m *OS) buildEffectPreview() {
 	// Through the saver's own resolver and builder, not a copy of them: an
 	// effect that previews differently from the way it runs is a preview of
 	// nothing. random resolves here exactly as it does at start-up.
-	name, effect, fill := screensaverEffect(items[m.EffectPickerSelected])
+	selected := items[m.EffectPickerSelected]
+	if config.IsScreensaverScene(selected) {
+		// A scene ignores the capture and draws at its size, which is the
+		// screen's.
+		anim := newSaverScene(selected, p.canvasWidth, p.canvasHeight, &m.Settings)
+		if anim == nil {
+			return
+		}
+		p.anim, p.running = anim, selected
+		p.frame = anim.Frame()
+		m.renderSkipped = false
+		return
+	}
+	name, effect, fill := screensaverEffect(selected)
 	if effect == nil {
 		return
 	}
@@ -166,7 +180,7 @@ func (m *OS) buildEffectPreview() {
 	if !ok {
 		return
 	}
-	p.engine, p.effect, p.running = engine, effect, name
+	p.anim, p.running = &effectAnimation{engine: engine, effect: effect}, name
 	p.frame = engine.Frame()
 	m.renderSkipped = false
 }
@@ -175,7 +189,7 @@ func (m *OS) buildEffectPreview() {
 // flight or there is nothing to advance.
 func (m *OS) effectPreviewTick() tea.Cmd {
 	p := &m.effectPreview
-	if p.engine == nil || p.ticking {
+	if p.anim == nil || p.ticking {
 		return nil
 	}
 	p.ticking = true
@@ -204,12 +218,14 @@ func (m *OS) handleEffectPreviewFrame(msg effectPreviewFrameMsg) tea.Cmd {
 	if !m.ShowEffectPicker {
 		return nil
 	}
-	if p.engine == nil {
+	if p.anim == nil {
 		return nil
 	}
 	// A resize invalidates the capture, and the screen it was taken from is
 	// underneath the picker now. The saver stops for this; so does the preview,
-	// and the panel says so instead of animating a screen that has moved.
+	// and the panel says so instead of animating a screen that has moved. A
+	// scene could be rebuilt, but the picker's rows are the same for both and
+	// one rule is easier to explain than two.
 	if m.GetRenderWidth() != p.width || m.GetRenderHeight() != p.height {
 		m.stopEffectPreview()
 		p.resized = true
@@ -217,10 +233,10 @@ func (m *OS) handleEffectPreviewFrame(msg effectPreviewFrameMsg) tea.Cmd {
 		m.renderSkipped = false
 		return nil
 	}
-	if !p.effect.Advance(p.engine) {
+	if !p.anim.Advance() {
 		m.buildEffectPreview()
 	} else {
-		p.frame = p.engine.Frame()
+		p.frame = p.anim.Frame()
 	}
 	m.renderSkipped = false
 	return m.effectPreviewTick()
@@ -229,7 +245,7 @@ func (m *OS) handleEffectPreviewFrame(msg effectPreviewFrameMsg) tea.Cmd {
 // stopEffectPreview drops the animation and everything it held.
 func (m *OS) stopEffectPreview() {
 	p := &m.effectPreview
-	p.engine, p.effect = nil, nil
+	p.anim = nil
 	p.frame, p.running = "", ""
 	p.capture = nil
 	p.canvasWidth, p.canvasHeight = 0, 0
@@ -436,6 +452,10 @@ const (
 	// effectOpeningLong is the band worth flagging. It is drawn in the warning
 	// colour on the row and under the list.
 	effectOpeningLong
+	// effectOpeningAlways is a scene: it never gives the screen back, because
+	// it is not a picture of the screen in the first place. That is what a
+	// classic screen saver does, so it is said plainly and not flagged.
+	effectOpeningAlways
 )
 
 // The band boundaries, in seconds over the reference screen.
@@ -459,6 +479,9 @@ const (
 // number wants to show it, and the number is not true of the screen the user is
 // looking at.
 func effectOpeningBandOf(name string, s *config.Settings) effectOpeningBand {
+	if config.IsScreensaverScene(name) {
+		return effectOpeningAlways
+	}
 	opening, ok := effectOpenings[name]
 	if !ok {
 		return effectOpeningUnknown

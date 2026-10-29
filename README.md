@@ -243,6 +243,7 @@ The guide is [docs/AGENT_STATE.md](docs/AGENT_STATE.md).
 ### More
 - **Showkeys Overlay**: Display pressed keys for presentations
 - **Spotlight**: Light one area of the screen and dim the rest, for demos and recordings (`[spotlight]` config table)
+- **Screen saver**: After a spell of quiet the screen dissolves through one of thirty-six effects and reassembles, or the classic `cmatrix` rain runs until you press a key (`[screensaver]` config table)
 - **Screenshots**: `tuios screenshot` renders a pane to PNG, SVG, ANSI, HTML or text
 - **Dock Components**: Your own commands drawn in the dock, updated on events, from a running command, or by polling ([examples](examples/dock/README.md))
 - **Customizable Keybindings**: TOML configuration with Kitty protocol support

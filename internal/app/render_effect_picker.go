@@ -169,6 +169,8 @@ func effectOpeningWord(band effectOpeningBand) string {
 		return "medium"
 	case effectOpeningLong:
 		return "long"
+	case effectOpeningAlways:
+		return "always"
 	default:
 		return ""
 	}
@@ -194,6 +196,8 @@ func effectOpeningSentence(band effectOpeningBand) string {
 		return "The wait is medium. The time depends on your screen."
 	case effectOpeningLong:
 		return "The wait is long. The time depends on your screen."
+	case effectOpeningAlways:
+		return "The screen stays hidden until you press a key."
 	default:
 		return ""
 	}
@@ -244,7 +248,9 @@ func (m *OS) effectDetailText(name string) (description, status string) {
 		return description, status
 	}
 
-	if d, ok := tfx.Lookup(name); ok {
+	if config.IsScreensaverScene(name) {
+		description = sceneDescription(name)
+	} else if d, ok := tfx.Lookup(name); ok {
 		description = d.Description
 	}
 	if status != "" {

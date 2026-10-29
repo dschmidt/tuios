@@ -310,14 +310,14 @@ func TestClosedEffectPickerRunsNothing(t *testing.T) {
 	_ = m.OpenEffectPicker()
 	gen = m.effectPreview.gen
 	m.ShowEffectPicker = false
-	if m.effectPreview.engine == nil {
+	if m.effectPreview.anim == nil {
 		t.Fatal("setup: the engine is already gone, so the flag is not what is being tested")
 	}
 	if cmd := m.handleEffectPreviewFrame(effectPreviewFrameMsg{gen: gen}); cmd != nil {
 		t.Error("the preview kept running after the picker was taken off screen")
 	}
 	m.CloseEffectPicker()
-	if m.effectPreview.engine != nil || m.effectPreview.capture != nil {
+	if m.effectPreview.anim != nil || m.effectPreview.capture != nil {
 		t.Error("closing the picker left the engine and the capture in memory")
 	}
 	if m.effectPreview.frame != "" {

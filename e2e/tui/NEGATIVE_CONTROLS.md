@@ -10282,3 +10282,23 @@ Each negative step has its positive half in the same fixture: the four
 admitted clients get a version line and stay open past the fifth, and the
 first key login draws its session and opens a pane before the second is
 refused.
+
+## The cmatrix scene
+
+`TestMatrixSceneRunsUntilAKeyAndSurvivesAResize` starts the saver with
+`effect = "cmatrix"` from `S`, waits for the marker to go and the half-width
+katakana of the rain to arrive, requires two frames to differ, resizes the
+terminal from 100x30 to 80x20 and requires the marker to stay hidden and the
+rain to go on at most 20 rows tall, then presses a key and requires the marker
+back and the rain gone. The katakana are what tell a scene from an effect: the
+effects draw the captured screen's own ASCII, so a build that falls back to an
+effect never shows them. Run on 2026-10-29 on Linux, based on origin/main at
+7709625.
+
+| Control: what was cut | Test failure | Verdict |
+| --- | --- | --- |
+| `config.ScreensaverScenes` emptied, so `cmatrix` is an unknown name and falls back to `random` | "the rain never covered the screen" after 10 s: the marker was hidden by an effect and no katakana ever appeared | **caught** |
+
+The resize half has no separate control. With the scene list emptied the test
+fails before reaching it, and an effect's stop on resize is the behaviour
+`TestEffectPreviewStopsOnResize` already pins for the preview.
